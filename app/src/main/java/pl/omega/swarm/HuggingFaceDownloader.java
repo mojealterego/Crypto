@@ -23,9 +23,9 @@ public final class HuggingFaceDownloader {
    boolean append=shouldAppend(start,status,c.getHeaderField("Content-Range"));
    if(status==206&&!append)throw new IOException("Invalid Content-Range");
    if(!append)start=0;
-   long length=c.getContentLengthLong(),total=length<0?-1:start+length;
+   long length=c.getContentLengthLong(),total=append?rangeTotal(start,c.getHeaderField("Content-Range")):length;
    if(total>ModelFiles.MAX_BYTES)throw new IOException("64 GiB limit");
-   if(length>0&&vault.directory().getUsableSpace()<length+32L*1024*1024)throw new IOException("Not enough storage");
+   if(total>0&&vault.directory().getUsableSpace()<total-start+32L*1024*1024)throw new IOException("Not enough storage");
    try(InputStream in=new BufferedInputStream(c.getInputStream());FileOutputStream out=new FileOutputStream(tmp,append)){
     byte[] buf=new byte[262144];long done=start;int n;
     while((n=in.read(buf))!=-1){if(cancel.get())throw new InterruptedIOException("Cancelled");
@@ -40,8 +40,16 @@ public final class HuggingFaceDownloader {
   }finally{if(c!=null)c.disconnect();if(cancel.get()){Files.deleteIfExists(tmp.toPath());Files.deleteIfExists(origin.toPath());}}
  }
  public static boolean shouldAppend(long already,int status,String range) {
-  if(already<=0||status!=206||range==null||!range.matches("bytes "+already+"-[0-9]+/[0-9*]+"))return false;
-  try{return Long.parseLong(range.substring(range.indexOf('-')+1,range.indexOf('/')))>=already;}catch(RuntimeException e){return false;}
+  if(already<=0||status!=206||range==null)return false;
+  return rangeTotal(already,range)>0;
+ }
+ public static long rangeTotal(long offset,String range){
+  if(offset<=0||range==null||!range.matches("bytes "+offset+"-[0-9]+/[0-9]+"))return -1;
+  try{
+   long end=Long.parseLong(range.substring(range.indexOf('-')+1,range.indexOf('/')));
+   long total=Long.parseLong(range.substring(range.indexOf('/')+1));
+   return end>=offset&&end<total&&total<=ModelFiles.MAX_BYTES?total:-1;
+  }catch(NumberFormatException e){return -1;}
  }
  private static String key(String value)throws IOException{
   try{byte[] b=MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
